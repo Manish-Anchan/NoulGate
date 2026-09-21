@@ -37,7 +37,4 @@ ENV PATH="/app/.venv/bin:$PATH" \
 EXPOSE 8080
 
 # Liveness probe — matches /health endpoint in proxy.py
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"
-
-CMD ["noulgate", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["noulgate", "--host", "0.0.0.0"]
