@@ -13,6 +13,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 
@@ -23,14 +24,14 @@ def main() -> None:
     )
     parser.add_argument(
         "--host",
-        default="0.0.0.0",
-        help="Host to bind to (default: 0.0.0.0)",
+        default=os.getenv("HOST", "0.0.0.0"),
+        help="Host to bind to (default: 0.0.0.0 or $HOST)",
     )
     parser.add_argument(
         "--port",
         type=int,
-        default=8080,
-        help="Port to listen on (default: 8080)",
+        default=int(os.getenv("PORT", "8080")),
+        help="Port to listen on (default: 8080 or $PORT)",
     )
     parser.add_argument(
         "--reload",

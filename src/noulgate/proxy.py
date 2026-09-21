@@ -296,11 +296,21 @@ def _get_engine(byok_key: str | None = None) -> NoulGateEngine:
 # FastAPI app
 # ---------------------------------------------------------------------------
 
+from fastapi.middleware.cors import CORSMiddleware
+
 app = FastAPI(
     title="NoulGate",
     description="High-speed System 1 MCP tool gateway powered by TypeSafe AI's Jev.",
     version="0.1.0",
     docs_url="/docs",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -436,24 +446,28 @@ async def chat_completions(request: Request) -> Response:
             )
         engine = _get_engine()
 
-    # ── Pruning ──────────────────────────────────────────────────────────────
+    # ── Pruning (with Graceful Fallback) ─────────────────────────────────────
     if raw_tools:
         prompt    = _extract_prompt(messages)
         tool_defs = _openai_tools_to_definitions(raw_tools)
-        result    = engine.prune(prompt, tool_defs)
-        log.info(result.summary())
+        try:
+            result    = engine.prune(prompt, tool_defs)
+            log.info(result.summary())
 
-        if result.needs_tool:
-            pruned_names = {t.name for t in result.selected_tools}
-            body["tools"] = [
-                t for t in raw_tools
-                if t.get("function", t).get("name") in pruned_names
-            ]
-            if "tool_choice" not in body:
-                body["tool_choice"] = "auto"
-        else:
-            body.pop("tools", None)
-            body.pop("tool_choice", None)
+            if result.needs_tool:
+                pruned_names = {t.name for t in result.selected_tools}
+                body["tools"] = [
+                    t for t in raw_tools
+                    if t.get("function", t).get("name") in pruned_names
+                ]
+                if "tool_choice" not in body:
+                    body["tool_choice"] = "auto"
+            else:
+                body.pop("tools", None)
+                body.pop("tool_choice", None)
+        except Exception as exc:
+            log.warning("NoulGate pruning error (falling back to all tools): %s", exc)
+            # Graceful degradation: keep original raw_tools so user call still succeeds
     else:
         log.info("Request has no tools — forwarding as-is.")
 
