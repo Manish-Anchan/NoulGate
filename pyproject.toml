@@ -1,0 +1,41 @@
+[project]
+name = "noulgate"
+version = "0.1.0"
+description = "A high-speed System 1 gateway that prunes MCP tool bloat using TypeSafe AI's Jev model before it reaches your LLM."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "Manish Anchan", email = "manishanchan789@gmail.com" }
+]
+keywords = ["mcp", "llm", "gateway", "proxy", "tool-pruning", "typesafe", "jev", "agents"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+requires-python = ">=3.13"
+dependencies = [
+    "typesafe-sdk>=0.7.0",
+    "fastapi>=0.141.0",
+    "uvicorn>=0.53.0",
+    "httpx>=0.28.0",
+    "python-dotenv>=1.2.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/manishanchan/noulgate"
+Repository = "https://github.com/manishanchan/noulgate"
+
+[project.scripts]
+noulgate = "noulgate.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+]
