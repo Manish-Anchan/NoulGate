@@ -1,6 +1,8 @@
+from dotenv import load_dotenv
 from typesafe_sdk import TypeSafeClient, Choice, Score, Noul
 
-client = TypeSafeClient(api_key="TYPESAFE_API_KEY_REDACTED")  # Uses TYPESAFE_API_KEY from env
+load_dotenv()  # loads TYPESAFE_API_KEY from .env
+client = TypeSafeClient()  # reads TYPESAFE_API_KEY from environment
 
 incoming_ticket = """
 I am just checking this 
