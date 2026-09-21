@@ -76,6 +76,68 @@ TOOL_THRESHOLD: float  = float(os.getenv("TOOL_THRESHOLD", "0.40"))
 FREE_TIER_DAILY_LIMIT: int = 50  # requests per IP per day on the server's Jev key
 
 # ---------------------------------------------------------------------------
+# 3-Tier Multi-Provider Upstream Resolution
+# ---------------------------------------------------------------------------
+
+PROVIDER_PRESETS: dict[str, str] = {
+    "groq":       "https://api.groq.com/openai/v1",
+    "openrouter": "https://openrouter.ai/api/v1",
+    "deepseek":   "https://api.deepseek.com/v1",
+    "together":   "https://api.together.xyz/v1",
+    "mistral":    "https://api.mistral.ai/v1",
+    "openai":     "https://api.openai.com/v1",
+}
+
+
+def resolve_upstream_base_url(
+    custom_header_url: str | None,
+    auth_header: str | None,
+    model_name: str,
+    default_fallback: str,
+) -> str:
+    """
+    3-Tier resolution of upstream base URL:
+    - Tier 1: Explicit 'x-upstream-base-url' client header.
+    - Tier 2: Auto-detect from Auth key prefix or Model name.
+    - Tier 3: Fall back to UPSTREAM_BASE_URL (default: https://api.openai.com/v1).
+    """
+    # ── Tier 1: Explicit client header override ───────────────────────────────
+    if custom_header_url and custom_header_url.strip():
+        return custom_header_url.strip().rstrip("/")
+
+    token = ""
+    if auth_header and auth_header.lower().startswith("bearer "):
+        token = auth_header[7:].strip()
+
+    model_lower = (model_name or "").lower()
+
+    # ── Tier 2: Auto-detect from Key Prefix or Model Name ────────────────────
+    # Groq: keys start with 'gsk_' or model is known Groq model
+    if token.startswith("gsk_") or any(
+        kw in model_lower for kw in ("qwen", "llama-3", "llama3", "mixtral", "gemma-2", "whisper")
+    ):
+        return PROVIDER_PRESETS["groq"]
+
+    # OpenRouter: keys start with 'sk-or-' or model has provider slash (e.g. anthropic/claude)
+    if token.startswith("sk-or-") or "/" in model_lower:
+        return PROVIDER_PRESETS["openrouter"]
+
+    # DeepSeek: keys start with 'dsk-' or model is deepseek
+    if token.startswith("dsk-") or "deepseek" in model_lower:
+        return PROVIDER_PRESETS["deepseek"]
+
+    # Together AI: keys start with 'tog_'
+    if token.startswith("tog_"):
+        return PROVIDER_PRESETS["together"]
+
+    # Mistral AI
+    if "mistral" in model_lower and not any(m in model_lower for m in ("gpt", "claude")):
+        return PROVIDER_PRESETS["mistral"]
+
+    # ── Tier 3: Default fallback ─────────────────────────────────────────────
+    return default_fallback.rstrip("/")
+
+# ---------------------------------------------------------------------------
 # Rate limiter  (in-memory, resets daily at midnight UTC)
 # ---------------------------------------------------------------------------
 
@@ -395,8 +457,19 @@ async def chat_completions(request: Request) -> Response:
     else:
         log.info("Request has no tools — forwarding as-is.")
 
-    # ── Forward to upstream ───────────────────────────────────────────────────
-    upstream_url = f"{UPSTREAM_BASE_URL}/chat/completions"
+    # ── Forward to upstream (3-Tier Resolution) ──────────────────────────────
+    custom_upstream = request.headers.get("x-upstream-base-url")
+    auth_header = request.headers.get("authorization")
+    model_name = body.get("model", "")
+
+    resolved_base = resolve_upstream_base_url(
+        custom_header_url=custom_upstream,
+        auth_header=auth_header,
+        model_name=model_name,
+        default_fallback=UPSTREAM_BASE_URL,
+    )
+    upstream_url = f"{resolved_base}/chat/completions"
+    log.info("Routing request to upstream: %s (model=%s)", upstream_url, model_name)
 
     forward_headers: dict[str, str] = {}
     for key, value in request.headers.items():
