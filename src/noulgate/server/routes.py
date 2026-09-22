@@ -14,9 +14,12 @@ import os
 from typing import Any, AsyncGenerator
 
 import httpx
+from dotenv import load_dotenv
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from typesafe_sdk import TypeSafeClient
+
+load_dotenv()
 
 from noulgate.core.domains import (
     DEFAULT_DOMAIN_CRITERIA,
@@ -99,7 +102,17 @@ async def prune_only(request: Request) -> JSONResponse:
     Debug endpoint: inspect the pruning decision and token metrics
     without forwarding anything to the upstream LLM.
     """
-    body: dict[str, Any] = await request.json()
+    try:
+        body: dict[str, Any] = await request.json()
+    except Exception:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "invalid_request",
+                "message": "Please provide a valid JSON body.",
+            },
+        )
+
     messages: list[dict[str, Any]] = body.get("messages", [])
     raw_tools: list[dict[str, Any]] = body.get("tools", [])
 
@@ -156,7 +169,17 @@ async def chat_completions(request: Request) -> Response:
     """
     OpenAI-compatible chat completions proxy with Jev System 1 tool pruning.
     """
-    body: dict[str, Any] = await request.json()
+    try:
+        body: dict[str, Any] = await request.json()
+    except Exception:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "invalid_request",
+                "message": "Please provide a valid JSON body.",
+            },
+        )
+
     messages: list[dict[str, Any]] = body.get("messages", [])
     raw_tools: list[dict[str, Any]] = body.get("tools", [])
     stream: bool = body.get("stream", False)
