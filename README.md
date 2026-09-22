@@ -67,7 +67,7 @@ Use the public hosted instance — no installation required.
 The server's Jev key is included (free tier: 50 requests/day per IP).
 
 ```
-https://noulgate.koyeb.app/v1
+https://noulgate.onrender.com/v1
 ```
 
 ---
@@ -184,12 +184,13 @@ Get your own TypeSafe API key at [typesafe.ai](https://typesafe.ai).
 
 ## Deploy for Free
 
-### Koyeb (Recommended)
+### Render (Recommended)
 
-1. Fork this repository.
-2. Go to [app.koyeb.com](https://app.koyeb.com) → New Service → GitHub.
-3. Set `TYPESAFE_API_KEY` as a secret environment variable.
-4. Deploy. Done — you get a free HTTPS URL.
+1. Fork or push this repository to GitHub.
+2. Go to [dashboard.render.com](https://dashboard.render.com) → **New** → **Web Service**.
+3. Select your repository, choose **Runtime: Docker**, and pick the **Free** instance.
+4. Add environment variable: `TYPESAFE_API_KEY=your_key`.
+5. Deploy. Done — you get a permanent public HTTPS URL.
 
 ### Hugging Face Spaces (Docker)
 
