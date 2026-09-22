@@ -21,10 +21,36 @@ Quick start::
 
     result = engine.prune("What was total revenue last week?")
     print(result.summary())
-    print(result.to_openai_tools())  # pass directly to openai.chat.completions
 """
 
-from noulgate.engine import NoulGateEngine, PruneResult, ToolDefinition
+from noulgate.core import (
+    DEFAULT_DOMAIN_CRITERIA,
+    DOMAIN_PATTERNS,
+    NoulGateEngine,
+    PruneResult,
+    ToolDefinition,
+    extract_prompt,
+    infer_domain,
+    openai_tools_to_definitions,
+)
 
-__all__ = ["NoulGateEngine", "ToolDefinition", "PruneResult"]
+# Optional server exports (only loaded if fastapi is installed)
+try:
+    from noulgate.server import app, create_app
+except ImportError:
+    app = None        # type: ignore[assignment]
+    create_app = None  # type: ignore[assignment]
+
+__all__ = [
+    "NoulGateEngine",
+    "ToolDefinition",
+    "PruneResult",
+    "app",
+    "create_app",
+    "infer_domain",
+    "openai_tools_to_definitions",
+    "extract_prompt",
+    "DEFAULT_DOMAIN_CRITERIA",
+    "DOMAIN_PATTERNS",
+]
 __version__ = "0.1.0"

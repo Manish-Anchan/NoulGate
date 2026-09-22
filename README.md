@@ -251,14 +251,21 @@ Tested live with Qwen-32B via Groq with 36 tools registered (GitHub, Postgres, K
 ```
 NoulGate/
 ├── src/noulgate/
-│   ├── __init__.py     Public API exports
-│   ├── engine.py       Core Jev decision engine (NoulGateEngine, ToolDefinition, PruneResult)
-│   ├── proxy.py        OpenAI-compatible FastAPI proxy server
-│   └── cli.py          Terminal entrypoint (noulgate command)
-├── verify_engine.py    Live verification test (8 prompts, 5 domains)
-├── Dockerfile          Multi-stage Docker build
-├── pyproject.toml      uv project manifest
-└── uv.lock             Reproducible dependency lockfile
+│   ├── __init__.py          Public package exports
+│   ├── cli.py               CLI entrypoint (noulgate command)
+│   ├── core/                Core pruning engine & data models
+│   │   ├── models.py        ToolDefinition, PruneResult
+│   │   ├── domains.py       Domain inference heuristics & OpenAI parsers
+│   │   └── engine.py        NoulGateEngine (Jev System 1 model)
+│   └── server/              Production FastAPI proxy gateway
+│       ├── app.py           FastAPI app factory & CORS middleware
+│       ├── rate_limit.py    Daily IP rate limiter & quota headers
+│       ├── router.py        3-tier multi-provider URL resolver
+│       └── routes.py        /health, /v1/prune, /v1/chat/completions
+├── verify_engine.py         Live verification suite (8 prompts, 5 domains)
+├── Dockerfile               Multi-stage production Docker build
+├── pyproject.toml           uv project manifest
+└── uv.lock                  Reproducible lockfile
 ```
 
 ---

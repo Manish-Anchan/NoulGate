@@ -58,7 +58,7 @@ def main() -> None:
     print()
 
     uvicorn.run(
-        "noulgate.proxy:app",
+        "noulgate.server:app",
         host=args.host,
         port=args.port,
         reload=args.reload,
