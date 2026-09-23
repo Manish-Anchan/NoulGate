@@ -40,7 +40,16 @@ log = logging.getLogger("noulgate.server")
 router = APIRouter()
 
 TOOL_THRESHOLD: float = float(os.getenv("TOOL_THRESHOLD", "0.28"))
-HOP_BY_HOP_HEADERS = {"host", "content-length", "connection", "transfer-encoding"}
+LLM_FORWARD_HEADERS = {
+    "authorization",
+    "content-type",
+    "openai-organization",
+    "openai-project",
+    "openai-beta",
+    "http-referer",
+    "x-title",
+    "x-api-key",
+}
 
 # ---------------------------------------------------------------------------
 # Engine management
@@ -49,24 +58,32 @@ HOP_BY_HOP_HEADERS = {"host", "content-length", "connection", "transfer-encoding
 _server_engine: NoulGateEngine | None = None
 
 
-def get_engine(byok_key: str | None = None) -> NoulGateEngine:
-    """Return a NoulGateEngine instance (per-request for BYOK, singleton for server key)."""
+def get_engine(byok_key: str | None = None) -> NoulGateEngine | None:
+    """Return a NoulGateEngine instance, or None if no TypeSafe API key is configured."""
     if byok_key:
-        engine = NoulGateEngine(
-            client=TypeSafeClient(api_key=byok_key),
-            tool_threshold=TOOL_THRESHOLD,
-        )
-        engine._domain_criteria.update(DEFAULT_DOMAIN_CRITERIA)
-        return engine
+        try:
+            engine = NoulGateEngine(
+                client=TypeSafeClient(api_key=byok_key),
+                tool_threshold=TOOL_THRESHOLD,
+            )
+            engine._domain_criteria.update(DEFAULT_DOMAIN_CRITERIA)
+            return engine
+        except Exception as exc:
+            log.warning("Failed to initialize BYOK engine: %s", exc)
+            return None
 
     global _server_engine
     if _server_engine is None:
-        _server_engine = NoulGateEngine(
-            client=TypeSafeClient(),
-            tool_threshold=TOOL_THRESHOLD,
-        )
-        _server_engine._domain_criteria.update(DEFAULT_DOMAIN_CRITERIA)
-        log.info("NoulGateEngine initialized (threshold=%.2f)", TOOL_THRESHOLD)
+        try:
+            _server_engine = NoulGateEngine(
+                client=TypeSafeClient(),
+                tool_threshold=TOOL_THRESHOLD,
+            )
+            _server_engine._domain_criteria.update(DEFAULT_DOMAIN_CRITERIA)
+            log.info("NoulGateEngine initialized (threshold=%.2f)", TOOL_THRESHOLD)
+        except Exception as exc:
+            log.warning("Could not initialize server NoulGateEngine (TYPESAFE_API_KEY missing?): %s", exc)
+            return None
     return _server_engine
 
 
@@ -129,6 +146,15 @@ async def prune_only(request: Request) -> JSONResponse:
 
     prompt = extract_prompt(messages)
     tool_defs = openai_tools_to_definitions(raw_tools)
+    if engine is None:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": "engine_unavailable",
+                "message": "TypeSafe engine is not configured on this server. Pass your key via x-typesafe-api-key header.",
+            },
+            headers=rl_headers,
+        )
     result = engine.prune(prompt, tool_defs)
 
     return JSONResponse(
@@ -190,7 +216,7 @@ async def chat_completions(request: Request) -> Response:
         engine = get_engine()
 
     # Pruning with Graceful Fallback
-    if raw_tools:
+    if raw_tools and engine is not None:
         prompt = extract_prompt(messages)
         tool_defs = openai_tools_to_definitions(raw_tools)
         try:
@@ -220,6 +246,8 @@ async def chat_completions(request: Request) -> Response:
                     body.pop("tool_choice", None)
         except Exception as exc:
             log.warning("Pruning error (falling back to all tools): %s", exc)
+    elif raw_tools and engine is None:
+        log.warning("No TypeSafe engine available — forwarding tools unpruned.")
     else:
         log.info("Request has no tools — forwarding as-is.")
 
@@ -237,9 +265,9 @@ async def chat_completions(request: Request) -> Response:
     upstream_url = f"{resolved_base}/chat/completions"
     log.info("Routing request to upstream: %s (model=%s)", upstream_url, model_name)
 
-    # Forward all client headers except hop-by-hop headers
+    # Forward only LLM-compatible headers to upstream provider
     forward_headers: dict[str, str] = {
-        k: v for k, v in request.headers.items() if k.lower() not in HOP_BY_HOP_HEADERS
+        k: v for k, v in request.headers.items() if k.lower() in LLM_FORWARD_HEADERS
     }
 
     # Use shared persistent HTTP client with connection pool
@@ -259,7 +287,7 @@ async def chat_completions(request: Request) -> Response:
                 await http_client.aclose()
 
         response_headers = {
-            k: v for k, v in rp_resp.headers.items() if k.lower() not in HOP_BY_HOP_HEADERS
+            k: v for k, v in rp_resp.headers.items() if k.lower() not in {"transfer-encoding", "content-length"}
         }
         response_headers.update(rl_headers)
 
@@ -274,7 +302,12 @@ async def chat_completions(request: Request) -> Response:
             resp = await http_client.post(upstream_url, json=body, headers=forward_headers)
             if resp.status_code != 200:
                 raise HTTPException(status_code=resp.status_code, detail=resp.text)
-            return JSONResponse(content=resp.json(), headers=rl_headers)
+            try:
+                content = resp.json()
+            except Exception:
+                import json as _json
+                content = _json.loads(resp.text)
+            return JSONResponse(content=content, headers=rl_headers)
         finally:
             if own_client:
                 await http_client.aclose()
