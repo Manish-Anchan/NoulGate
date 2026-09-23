@@ -42,28 +42,29 @@ def resolve_upstream_base_url(
 
     model_lower = (model_name or "").lower()
 
-    # ── Tier 2: Auto-detect from Key Prefix or Model Name ────────────────────
-    # Groq
-    if token.startswith("gsk_") or any(
-        kw in model_lower for kw in ("qwen", "llama-3", "llama3", "mixtral", "gemma-2", "whisper")
-    ):
+    # ── Tier 2A: Detect provider strictly by unambiguous API Key Prefix ──────
+    if token.startswith("gsk_"):
         return PROVIDER_PRESETS["groq"]
-
-    # OpenRouter
-    if token.startswith("sk-or-") or "/" in model_lower:
+    if token.startswith("sk-or-"):
         return PROVIDER_PRESETS["openrouter"]
-
-    # DeepSeek
-    if token.startswith("dsk-") or "deepseek" in model_lower:
+    if token.startswith(("tog_", "together_")):
+        return PROVIDER_PRESETS["together"]
+    if token.startswith("dsk-"):
         return PROVIDER_PRESETS["deepseek"]
 
-    # Together AI
-    if token.startswith("tog_"):
-        return PROVIDER_PRESETS["together"]
+    # ── Tier 2B: Detect provider from Model Name (when key prefix is generic) ─
+    if "/" in model_lower:
+        # Universal multi-provider format (e.g. meta-llama/..., qwen/... on OpenRouter)
+        return PROVIDER_PRESETS["openrouter"]
 
-    # Mistral AI
+    if "deepseek" in model_lower:
+        return PROVIDER_PRESETS["deepseek"]
+
     if "mistral" in model_lower and not any(m in model_lower for m in ("gpt", "claude")):
         return PROVIDER_PRESETS["mistral"]
+
+    if any(kw in model_lower for kw in ("llama-3", "llama3", "mixtral", "gemma-2", "whisper", "qwen")):
+        return PROVIDER_PRESETS["groq"]
 
     # ── Tier 3: Fallback ─────────────────────────────────────────────────────
     return default_fallback.rstrip("/")

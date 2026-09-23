@@ -11,12 +11,13 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, AsyncGenerator
+from typing import Any
 
 import httpx
 from dotenv import load_dotenv
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.background import BackgroundTask
 from typesafe_sdk import TypeSafeClient
 
 load_dotenv()
@@ -30,6 +31,7 @@ from noulgate.core.engine import NoulGateEngine
 from noulgate.server.rate_limit import (
     FREE_TIER_DAILY_LIMIT,
     check_rate_limit,
+    get_client_ip,
     rate_limit_headers,
 )
 from noulgate.server.router import UPSTREAM_BASE_URL, resolve_upstream_base_url
@@ -37,7 +39,8 @@ from noulgate.server.router import UPSTREAM_BASE_URL, resolve_upstream_base_url
 log = logging.getLogger("noulgate.server")
 router = APIRouter()
 
-TOOL_THRESHOLD: float = float(os.getenv("TOOL_THRESHOLD", "0.40"))
+TOOL_THRESHOLD: float = float(os.getenv("TOOL_THRESHOLD", "0.28"))
+HOP_BY_HOP_HEADERS = {"host", "content-length", "connection", "transfer-encoding"}
 
 # ---------------------------------------------------------------------------
 # Engine management
@@ -65,24 +68,6 @@ def get_engine(byok_key: str | None = None) -> NoulGateEngine:
         _server_engine._domain_criteria.update(DEFAULT_DOMAIN_CRITERIA)
         log.info("NoulGateEngine initialized (threshold=%.2f)", TOOL_THRESHOLD)
     return _server_engine
-
-
-# ---------------------------------------------------------------------------
-# Upstream Streaming Helper
-# ---------------------------------------------------------------------------
-
-
-async def stream_upstream(
-    client: httpx.AsyncClient,
-    url: str,
-    headers: dict[str, str],
-    payload: dict[str, Any],
-) -> AsyncGenerator[bytes, None]:
-    """Stream SSE bytes directly from upstream LLM to client."""
-    async with client.stream("POST", url, json=payload, headers=headers) as resp:
-        resp.raise_for_status()
-        async for chunk in resp.aiter_bytes():
-            yield chunk
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +110,7 @@ async def prune_only(request: Request) -> JSONResponse:
         engine = get_engine(byok_key)
         rl_headers = rate_limit_headers("unlimited")
     else:
-        client_ip = request.client.host if request.client else "unknown"
+        client_ip = get_client_ip(request)
         allowed, remaining = check_rate_limit(client_ip)
         rl_headers = rate_limit_headers(remaining)
         if not allowed:
@@ -190,7 +175,7 @@ async def chat_completions(request: Request) -> Response:
         engine = get_engine(byok_key)
         rl_headers = rate_limit_headers("unlimited")
     else:
-        client_ip = request.client.host if request.client else "unknown"
+        client_ip = get_client_ip(request)
         allowed, remaining = check_rate_limit(client_ip)
         rl_headers = rate_limit_headers(remaining)
         if not allowed:
@@ -212,17 +197,27 @@ async def chat_completions(request: Request) -> Response:
             result = engine.prune(prompt, tool_defs)
             log.info(result.summary())
 
+            orig_tool_choice = body.get("tool_choice")
             if result.needs_tool:
                 pruned_names = {t.name for t in result.selected_tools}
                 body["tools"] = [
                     t for t in raw_tools
                     if t.get("function", t).get("name") in pruned_names
                 ]
-                if "tool_choice" not in body:
+                if orig_tool_choice == "none":
+                    body["tool_choice"] = "none"
+                elif isinstance(orig_tool_choice, dict):
+                    body["tool_choice"] = orig_tool_choice
+                elif orig_tool_choice == "required":
+                    body["tool_choice"] = "required"
+                else:
                     body["tool_choice"] = "auto"
             else:
                 body.pop("tools", None)
-                body.pop("tool_choice", None)
+                if orig_tool_choice == "none":
+                    body["tool_choice"] = "none"
+                else:
+                    body.pop("tool_choice", None)
         except Exception as exc:
             log.warning("Pruning error (falling back to all tools): %s", exc)
     else:
@@ -242,20 +237,44 @@ async def chat_completions(request: Request) -> Response:
     upstream_url = f"{resolved_base}/chat/completions"
     log.info("Routing request to upstream: %s (model=%s)", upstream_url, model_name)
 
-    forward_headers: dict[str, str] = {}
-    for key, value in request.headers.items():
-        if key.lower() in ("authorization", "content-type", "openai-organization"):
-            forward_headers[key] = value
+    # Forward all client headers except hop-by-hop headers
+    forward_headers: dict[str, str] = {
+        k: v for k, v in request.headers.items() if k.lower() not in HOP_BY_HOP_HEADERS
+    }
 
-    async with httpx.AsyncClient(timeout=120.0) as http:
-        if stream:
-            return StreamingResponse(
-                stream_upstream(http, upstream_url, forward_headers, body),
-                media_type="text/event-stream",
-                headers=rl_headers,
-            )
-        else:
-            resp = await http.post(upstream_url, json=body, headers=forward_headers)
+    # Use shared persistent HTTP client with connection pool
+    http_client: httpx.AsyncClient = getattr(request.app.state, "http_client", None)
+    own_client = False
+    if http_client is None:
+        http_client = httpx.AsyncClient(timeout=120.0)
+        own_client = True
+
+    if stream:
+        req = http_client.build_request("POST", upstream_url, json=body, headers=forward_headers)
+        rp_resp = await http_client.send(req, stream=True)
+
+        async def close_stream():
+            await rp_resp.aclose()
+            if own_client:
+                await http_client.aclose()
+
+        response_headers = {
+            k: v for k, v in rp_resp.headers.items() if k.lower() not in HOP_BY_HOP_HEADERS
+        }
+        response_headers.update(rl_headers)
+
+        return StreamingResponse(
+            rp_resp.aiter_raw(),
+            status_code=rp_resp.status_code,
+            headers=response_headers,
+            background=BackgroundTask(close_stream),
+        )
+    else:
+        try:
+            resp = await http_client.post(upstream_url, json=body, headers=forward_headers)
             if resp.status_code != 200:
                 raise HTTPException(status_code=resp.status_code, detail=resp.text)
             return JSONResponse(content=resp.json(), headers=rl_headers)
+        finally:
+            if own_client:
+                await http_client.aclose()

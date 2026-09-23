@@ -25,7 +25,7 @@ class NoulGateEngine:
     def __init__(
         self,
         client: TypeSafeClient | None = None,
-        tool_threshold: float = 0.40,
+        tool_threshold: float = 0.28,
     ) -> None:
         """
         Args:
@@ -58,8 +58,8 @@ class NoulGateEngine:
     ) -> None:
         """Register multiple tools at once."""
         for tool in tools:
-            criteria = (domain_criteria or {}).get(tool.domain, "")
-            self.register(tool, criteria)
+            criteria = domain_criteria.get(tool.domain, "") if domain_criteria else ""
+            self.register(tool, domain_criteria=criteria)
 
     def prune(
         self,
@@ -67,16 +67,12 @@ class NoulGateEngine:
         tools: list[ToolDefinition] | None = None,
     ) -> PruneResult:
         """
-        Evaluate prompt and return only the tools the LLM actually needs.
+        Evaluate a user prompt and prune the tool set strictly among provided tools.
 
-        Args:
-            prompt: The user's query or conversational turn.
-            tools: Optional per-request tool list (overrides registered tools).
-
-        Returns:
-            PruneResult containing the selected tools and token metrics.
+        Pass 1: Parallel Noul (tool needed?) + Choice (target domain).
+        Pass 2: Select matching domain toolset (or top tool if domain > 5).
         """
-        active_tools: dict[str, ToolDefinition] = (
+        active_tools = (
             {t.name: t for t in tools} if tools is not None else self._tools
         )
         total_tokens = sum(t.estimated_tokens() for t in active_tools.values())
@@ -94,7 +90,7 @@ class NoulGateEngine:
                 latency_ms=0.0,
             )
 
-        # Build domain criteria map from active tools
+        # Build domain criteria map only from the active tools provided by caller
         domain_map: dict[str, str] = {}
         for t in active_tools.values():
             if t.domain not in domain_map:
@@ -110,9 +106,9 @@ class NoulGateEngine:
             questions={
                 "needs_tool": Noul(
                     instructions=(
-                        "Does answering this prompt require calling an external "
-                        "tool, fetching live data, querying a database, reading "
-                        "a file, or interacting with an external API or service?"
+                        "Does answering this prompt require calling an external tool, "
+                        "searching the live web for recent technologies, documentation, products, sports fixtures, or live data, "
+                        "querying real-time system metrics, querying a database, or accessing files/APIs?"
                     )
                 ),
                 "target_domain": Choice(
@@ -125,7 +121,7 @@ class NoulGateEngine:
         tool_prob: float = pass1.answers["needs_tool"].noul
         chosen_domain: str = pass1.answers["target_domain"].choice
 
-        # ── Path A: No tool needed ────────────────────────────────────────────
+        # ── Path A: No tool needed (p < threshold) ───────────────────────────
         if tool_prob < self.tool_threshold:
             return PruneResult(
                 needs_tool=False,
@@ -138,17 +134,17 @@ class NoulGateEngine:
                 latency_ms=(time.perf_counter() - t0) * 1000,
             )
 
-        # ── Path B: Tool needed — narrow to matching domain ───────────────────
+        # ── Path B: Tool needed — narrow strictly to matching domain ──────────
         domain_tools = [t for t in active_tools.values() if t.domain == chosen_domain]
 
         if not domain_tools:
-            # Domain matched but no tools found — fallback to all tools
+            # Domain matched but no tools found — fallback to caller's tools
             selected = list(active_tools.values())
-        elif len(domain_tools) == 1:
-            # Single tool in domain — skip Pass 2 to save latency & cost
-            selected = domain_tools
+        elif len(domain_tools) <= 5:
+            # Return caller's domain toolset (typically 2-4 tools)
+            selected = list(domain_tools)
         else:
-            # ── Pass 2: Pick specific tool within domain ─────────────────────
+            # ── Pass 2: If domain is large (>5 tools), pick top tool ─────────
             pass2 = self.client.system_one(
                 state=f"User prompt: {prompt}",
                 questions={
@@ -159,7 +155,8 @@ class NoulGateEngine:
                 },
             )
             best_name: str = pass2.answers["specific_tool"].choice
-            selected = [active_tools[best_name]]
+            tool_match = active_tools.get(best_name) or domain_tools[0]
+            selected = [tool_match]
 
         pruned_tokens = sum(t.estimated_tokens() for t in selected)
 
