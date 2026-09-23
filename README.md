@@ -19,21 +19,28 @@ Your Agent / Cursor / Claude Desktop
 ┌─────────────────────────────────────────┐
 │            NoulGate Gateway             │
 │                                         │
-│  1. Extract user's message              │
-│  2. Jev evaluates in System 1 (~100ms): │
+│  1. Extract user prompt                 │
+│  2. Jev evaluates in System 1 (~300ms): │
 │     • Noul  — tool needed? (0.0–1.0)    │
-│     • Choice — which domain?            │
-│  3. Prune 36 tools → 1 relevant tool    │
+│     • Parallel Multi-Domain confidence  │
+│  3. Prunes irrelevant schemas:          │
+│     • Casual turn   → 0 tools (100% off)│
+│     • Single domain → 1-2 exact tools   │
+│     • Cross-domain  → joint tool set    │
 │  4. Auto-route to Groq, OpenAI, etc.    │
 └─────────────────────────────────────────┘
           │
           │  POST https://api.groq.com/openai/v1/chat/completions
-          │  { messages: [...], tools: [1 tool, ~180 tokens] }
+          │  { messages: [...], tools: [1-2 tools, ~180 tokens] }
           ▼
      Groq (Qwen/Llama) / OpenAI / DeepSeek / any LLM
 ```
 
-**Result:** Up to 97.2% token reduction on tool schemas, faster Time-To-First-Token, and zero tool-confusion hallucinations.
+**Key Features:**
+* 🛡️ **Zero-Tool Gating:** Casual greetings ("hi", "thanks!") strip 100% of tool schemas, preventing tool hallucinations and saving context.
+* ⚡ **Parallel Multi-Domain Intelligence:** Evaluates active domains in parallel. Prompts spanning boundaries (e.g. SQL logs + web search) automatically retain tools from both domains.
+* 🔄 **Transparent OpenAI Drop-in:** Works with standard OpenAI SDKs, LangChain, Claude Desktop, and Cursor. Full SSE streaming supported.
+* 📊 **Massive Token Reductions:** Up to 97.2% reduction in tool schema overhead per turn.
 
 ---
 
