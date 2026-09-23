@@ -100,26 +100,27 @@ class NoulGateEngine:
 
         t0 = time.perf_counter()
 
-        # ── Pass 1: Parallel Noul + Choice in a single Jev forward pass ────────
+        # ── Pass 1: Parallel Noul for tool need + all candidate domains ───────
+        pass1_questions: dict[str, Any] = {
+            "needs_tool": Noul(
+                instructions=(
+                    "Does answering this prompt require calling an external tool, "
+                    "searching the live web for recent technologies, documentation, products, sports fixtures, or live data, "
+                    "querying real-time system metrics, querying a database, or accessing files/APIs?"
+                )
+            ),
+        }
+        for d, criteria in domain_map.items():
+            pass1_questions[f"dom_{d}"] = Noul(
+                instructions=f"Does this prompt require tools or data from {d}? ({criteria})"
+            )
+
         pass1 = self.client.system_one(
             state=f"User prompt: {prompt}",
-            questions={
-                "needs_tool": Noul(
-                    instructions=(
-                        "Does answering this prompt require calling an external tool, "
-                        "searching the live web for recent technologies, documentation, products, sports fixtures, or live data, "
-                        "querying real-time system metrics, querying a database, or accessing files/APIs?"
-                    )
-                ),
-                "target_domain": Choice(
-                    instructions="Which tool domain best matches what this prompt needs?",
-                    criteria=domain_map,
-                ),
-            },
+            questions=pass1_questions,
         )
 
         tool_prob: float = pass1.answers["needs_tool"].noul
-        chosen_domain: str = pass1.answers["target_domain"].choice
 
         # ── Path A: No tool needed (p < threshold) ───────────────────────────
         if tool_prob < self.tool_threshold:
@@ -134,36 +135,52 @@ class NoulGateEngine:
                 latency_ms=(time.perf_counter() - t0) * 1000,
             )
 
-        # ── Path B: Tool needed — narrow strictly to matching domain ──────────
-        domain_tools = [t for t in active_tools.values() if t.domain == chosen_domain]
+        # ── Path B: Tool needed — high-confidence multi-domain selection ─────
+        # Find best domain and any co-occurring high-confidence domains (>= 0.80)
+        domain_scores = {
+            d: pass1.answers[f"dom_{d}"].noul for d in domain_map
+        }
+        best_domain = max(domain_scores.keys(), key=lambda d: domain_scores[d])
 
-        if not domain_tools:
-            # Domain matched but no tools found — fallback to caller's tools
+        candidate_domains = [best_domain]
+        for d, score in domain_scores.items():
+            if d != best_domain and score >= 0.80:
+                candidate_domains.append(d)
+
+        # Gather tools across all selected domains
+        selected: list[ToolDefinition] = []
+        for d in candidate_domains:
+            d_tools = [t for t in active_tools.values() if t.domain == d]
+            if len(d_tools) <= 5:
+                for t in d_tools:
+                    if not any(st.name == t.name for st in selected):
+                        selected.append(t)
+            else:
+                # If a specific domain has >5 tools, select the best matching tool
+                pass2 = self.client.system_one(
+                    state=f"User prompt: {prompt}",
+                    questions={
+                        "specific_tool": Choice(
+                            instructions=f"Select the single best tool from {d} to fulfill this prompt.",
+                            criteria={t.name: t.description for t in d_tools},
+                        )
+                    },
+                )
+                best_name: str = pass2.answers["specific_tool"].choice
+                tool_match = active_tools.get(best_name) or d_tools[0]
+                if not any(st.name == tool_match.name for st in selected):
+                    selected.append(tool_match)
+
+        if not selected:
             selected = list(active_tools.values())
-        elif len(domain_tools) <= 5:
-            # Return caller's domain toolset (typically 2-4 tools)
-            selected = list(domain_tools)
-        else:
-            # ── Pass 2: If domain is large (>5 tools), pick top tool ─────────
-            pass2 = self.client.system_one(
-                state=f"User prompt: {prompt}",
-                questions={
-                    "specific_tool": Choice(
-                        instructions="Select the single best tool to fulfill this prompt.",
-                        criteria={t.name: t.description for t in domain_tools},
-                    )
-                },
-            )
-            best_name: str = pass2.answers["specific_tool"].choice
-            tool_match = active_tools.get(best_name) or domain_tools[0]
-            selected = [tool_match]
 
+        selected_domain_str = ", ".join(candidate_domains)
         pruned_tokens = sum(t.estimated_tokens() for t in selected)
 
         return PruneResult(
             needs_tool=True,
             tool_probability=tool_prob,
-            selected_domain=chosen_domain,
+            selected_domain=selected_domain_str,
             selected_tools=selected,
             total_tools_input=len(active_tools),
             total_tokens_input=total_tokens,
